@@ -1,0 +1,56 @@
+{
+  "name": "planchat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "planchat": "dist/planchat"
+  },
+  "scripts": {
+    "test": "bun test",
+    "build:ui": "bun run scripts/build-ui.ts",
+    "build": "bun run scripts/build-ui.ts && bun build --compile --minify src/cli.ts --outfile dist/planchat",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@codemirror/lang-cpp": "^6.0.3",
+    "@codemirror/lang-css": "^6.3.1",
+    "@codemirror/lang-go": "^6.0.1",
+    "@codemirror/lang-html": "^6.4.12",
+    "@codemirror/lang-java": "^6.0.2",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/lang-rust": "^6.0.2",
+    "@codemirror/lang-sql": "^6.10.0",
+    "@codemirror/lang-yaml": "^6.1.3",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/legacy-modes": "^6.5.5",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.44.0",
+    "@lezer/highlight": "^1.2.5",
+    "@preact/signals": "^2.11.4",
+    "@types/bun": "^1.4.5",
+    "@types/diff-match-patch": "^1.0.36",
+    "@types/hast": "^3.0.5",
+    "bun": "^1.4.5",
+    "codemirror": "^6.0.2",
+    "decode-named-character-reference": "^1.3.0",
+    "playwright-core": "1.56.1",
+    "preact": "^11.2.0",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "typescript": "^7.0.2",
+    "unified": "^11.0.5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "diff-match-patch": "^1.0.5",
+    "ignore": "^7.0.17",
+    "zod": "^4.6.7"
+  },
+  "license": "MIT"
+}
