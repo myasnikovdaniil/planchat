@@ -17,6 +17,16 @@ planchat attach codex --session <name>
 
 It reads this thread's id from `CODEX_THREAD_ID` and subscribes the session to the workspace whose root contains the current directory. The output says what it subscribed to. If it says `none`, run `planchat subscribe <workspace>`.
 
+If the user named the files to discuss, subscribe to exactly those before attaching, with paths relative to the workspace root: `planchat --session <name> subscribe <ws> docs/plan.md docs/notes.md`. The session then hears only those files, and the link below lists only them in the UI.
+
+Then give the user the link:
+
+```bash
+planchat url [FILE]
+```
+
+It prints `local <url>` and, when the daemon listens on a LAN address, `lan <url>`, with the saved token already in the URL and the page narrowed to this session's files. Give the `lan` link when the user opens the page from another device ("on the local network", "from my phone", "в локалку"), the `local` one otherwise, and both when unsure. Never build the link by hand and never put anything from `config.json` into it: the config holds a hash of the token, which the daemon rejects. Do not start a second `planchat serve` or change the daemon's flags; if the user asks to switch the token off, tell them first that without it anyone who can reach the LAN address reads every workspace and posts comments that reach agent sessions.
+
 If it fails with "not reachable", tell the user to start `planchat serve` and stop here. `session name … is already connected` means another session holds the name: pick another.
 
 Nothing else needs to keep running: the daemon itself runs `codex queue` for every event, so a new comment arrives as a new message in this conversation, also when you are idle. Events that come while you work arrive after your current turn. The attachment survives daemon restarts. `planchat detach` ends it.
@@ -61,5 +71,6 @@ After `attach`, every `planchat` command run from this Codex session acts as the
 | `planchat release THREAD` | hand back: the thread goes to its audience again |
 | `planchat resolve THREAD` | close a thread you claimed |
 | `planchat create FILE BODY --exact TEXT [--nth N]` | start a thread yourself, e.g. to ask the human something |
-| `planchat subscribe [WS] [GLOB…]` | change which files you hear about |
+| `planchat subscribe [WS] [GLOB…]` | change which files you hear about; replaces the previous list for that workspace |
+| `planchat url [FILE]` | links to the UI page for the user |
 | `planchat detach` | stop receiving events here |

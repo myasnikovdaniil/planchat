@@ -19,6 +19,14 @@ planchat sessions
 
 If it fails with "not reachable", tell the user to start `planchat serve` and stop here. If the name shows as online (`●`), pick another.
 
+If the user named the files to discuss, subscribe to exactly those before arming the Monitor, with paths relative to the workspace root:
+
+```bash
+planchat --session <name> subscribe <ws> docs/plan.md docs/notes.md
+```
+
+The session then hears only those files, and the link from step 3 lists only them in the UI. Without it, the session subscribes on connect to the whole workspace that contains the current directory.
+
 ## 2. Arm the Monitor
 
 ```
@@ -35,7 +43,19 @@ The first line is `[planchat] connected as <name>; subscribed: <ws>:<globs>; pen
 
 **On every expiry notice, re-arm at once with the same command.** Nothing is lost while the Monitor is down: the daemon keeps a cursor per session and resends everything after it.
 
-## 3. Handle an event line
+## 3. Give the user the link
+
+```bash
+planchat --session <name> url [FILE]
+```
+
+It prints `local <url>` and, when the daemon listens on a LAN address, `lan <url>`, with the saved token already in the URL and the page narrowed to this session's files. Give the `lan` link when the user opens the page from another device ("on the local network", "from my phone", "в локалку"), the `local` one otherwise, and both when unsure.
+
+Never build the link by hand. Never put anything from `config.json` into it: the config holds a hash of the token, which the daemon rejects. If `url` warns that the session is not subscribed, subscribe first (step 1).
+
+Do not start a second `planchat serve` and do not change the daemon's flags. If the user asks to switch the token off, tell them first what that means: without a token, anyone who can reach the LAN address reads every workspace and posts comments that reach sessions with shell access.
+
+## 4. Handle an event line
 
 ```
 [planchat] alice commented on docs/plan.md:42–44 «quoted text» (ws=docs, thread=01J…, event=01J…, reactions: do) user-text: <comment>
@@ -59,7 +79,7 @@ Verbs: `commented on` (new thread), `replied on`, `reacted "do" on`, `released t
 
 Replies with newlines go through stdin: `printf '%s' "$text" | planchat --session <name> reply <thread> -`.
 
-## 4. CLI
+## 5. CLI
 
 Always pass `--session <name>`: shell state does not persist between Bash calls.
 
@@ -73,8 +93,9 @@ Always pass `--session <name>`: shell state does not persist between Bash calls.
 | `planchat release THREAD` | hand back: the thread goes to its audience again |
 | `planchat resolve THREAD` | close a thread you claimed |
 | `planchat create FILE BODY --exact TEXT [--nth N]` | start a thread yourself, e.g. to ask the human something |
-| `planchat subscribe [WS] [GLOB…]` | change which files you hear about |
+| `planchat subscribe [WS] [GLOB…]` | change which files you hear about; replaces the previous list for that workspace |
+| `planchat url [FILE]` | links to the UI page for the user |
 
-## 5. Stop
+## 6. Stop
 
 Stop the Monitor with TaskStop. To stop hearing about a workspace for good: `planchat --session <name> unsubscribe <ws>`. A claim stays until released or resolved; release open claims before leaving.
