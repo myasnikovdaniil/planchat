@@ -26,6 +26,8 @@ export interface FileList {
   ws: string;
   files: string[];
   threads: Record<string, { open: number; total: number }>;
+  /** present when the list was narrowed to one session's subscription */
+  scope?: { session: string; globs: string[] };
 }
 
 export interface FileContent {
@@ -66,7 +68,7 @@ const q = (o: Record<string, string | undefined>) => {
 export const api = {
   me: () => call<Me>("GET", "/api/me"),
   sessions: () => call<SessionInfo[]>("GET", "/api/sessions"),
-  files: (ws: string) => call<FileList>("GET", `/api/files?${q({ ws })}`),
+  files: (ws: string, session?: string) => call<FileList>("GET", `/api/files?${q({ ws, session })}`),
   file: (ws: string, path: string) => call<FileContent>("GET", `/api/file?${q({ ws, path })}`),
   threads: (ws: string) => call<ThreadView[]>("GET", `/api/threads?${q({ ws, status: "all" })}`),
   create: (ws: string, file: string, anchor: { start: number; end: number; baseHash: string }, body: string) =>

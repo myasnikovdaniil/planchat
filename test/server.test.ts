@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, type Config } from "../src/config.ts";
 import { PlanchatClient, streamEvents } from "../src/client.ts";
-import { PlanchatServer } from "../src/server.ts";
+import { isLoopback, PlanchatServer } from "../src/server.ts";
 import { sha256 } from "../src/store.ts";
 
 let root: string;
@@ -151,5 +151,82 @@ describe("end to end over HTTP and WS", () => {
     expect(after.lines).toEqual({ from: 6, to: 6 });
     writeFileSync(join(root, "plan.md"), "# Plan\n\nNew intro line.\n\nStep one: build it.\n");
     await until(() => server.hub.ws("w").thread(t.id).anchor.state === "orphaned", 4000);
+  });
+});
+
+describe("session scope, workspace roots, listen info", () => {
+  test("/api/files?session= lists only the files that session is subscribed to", async () => {
+    writeFileSync(join(root, "notes.md"), "notes\n");
+    mkdirSync(join(root, "docs"));
+    writeFileSync(join(root, "docs", "a.md"), "a\n");
+    const url = await start();
+    const auth = { authorization: `Bearer ${TOKEN}` };
+    const human = new PlanchatClient({ url, token: TOKEN });
+    await human.createThread({ ws: "w", file: "notes.md", anchor: { exact: "notes" }, body: "x" });
+    await new PlanchatClient({ url, token: TOKEN, session: "rev" }).subscribe({ ws: "w", globs: ["plan.md", "docs/**"] });
+
+    const all = await (await fetch(`${url}/api/files?ws=w`, { headers: auth })).json();
+    expect(all.files).toEqual(["docs/a.md", "notes.md", "plan.md"]);
+    expect(all.scope).toBeUndefined();
+
+    const scoped = await (await fetch(`${url}/api/files?ws=w&session=rev`, { headers: auth })).json();
+    expect(scoped.files).toEqual(["docs/a.md", "plan.md"]);
+    expect(scoped.scope).toEqual({ session: "rev", globs: ["plan.md", "docs/**"] });
+    expect(scoped.threads).toEqual({}); // the thread on notes.md is outside the scope
+
+    const nobody = await (await fetch(`${url}/api/files?ws=w&session=ghost`, { headers: auth })).json();
+    expect(nobody.files).toEqual([]);
+    expect(nobody.scope).toEqual({ session: "ghost", globs: [] });
+  });
+
+  test("a second workspace on a root already in use is refused, also through a symlink", async () => {
+    const url = await start();
+    const human = new PlanchatClient({ url, token: TOKEN });
+    await expect(human.addWorkspace("w2", root)).rejects.toMatchObject({ status: 409, code: "root_taken" });
+    const link = join(home, "link-to-root");
+    symlinkSync(root, link);
+    await expect(human.addWorkspace("w3", link)).rejects.toMatchObject({ status: 409, code: "root_taken" });
+    const other = mkdtempSync(join(tmpdir(), "planchat-other-"));
+    expect((await human.addWorkspace("w4", other)).name).toBe("w4");
+  });
+
+  test("a duplicate root in the config is skipped at startup, the daemon still starts", async () => {
+    const url = await start(true, {
+      workspaces: [
+        { name: "w", root, include: ["**"], exclude: [] },
+        { name: "again", root, include: ["**"], exclude: [] },
+      ],
+    });
+    const list = await new PlanchatClient({ url, token: TOKEN }).workspaces();
+    expect(list.map((w) => w.name)).toEqual(["w"]);
+  });
+
+  test("/api/me reports the listen port, LAN address and auth mode", async () => {
+    const url = await start();
+    const me = await new PlanchatClient({ url, token: TOKEN }).me();
+    expect(me.listen).toEqual({ port: server.port, lan: null, auth: true });
+  });
+
+  const lanAddr = Object.values(networkInterfaces())
+    .flat()
+    .find((i) => i && i.family === "IPv4" && !i.internal)?.address;
+  test.skipIf(!lanAddr)("a workspace is added over loopback only, not over the LAN address, even without auth", async () => {
+    // one fixed port: with 0 the loopback and LAN listeners would each get their own
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    const cfg: Config = { ...defaultConfig(), port, workspaces: [{ name: "w", root, include: ["**"], exclude: [] }], debounceMs: 30 };
+    server = new PlanchatServer(cfg, { port, lan: lanAddr!, auth: false, persist: false, quiet: true, configFile: join(home, "config.json") });
+    await server.start();
+    const other = mkdtempSync(join(tmpdir(), "planchat-other-"));
+    const add = (host: string, name: string) =>
+      fetch(`http://${host}:${server.port}/api/workspaces`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, root: other }) });
+    const viaLan = await add(lanAddr!, "grab");
+    expect(viaLan.status).toBe(403);
+    expect((await viaLan.json()).message).toContain("from this machine only");
+    expect((await add("127.0.0.1", "local")).status).toBe(201);
+  });
+
+  test("isLoopback accepts 127.0.0.0/8 and ::1 only", () => {
+    for (const a of ["127.0.0.1", "127.1.2.3", "::1", "::ffff:127.0.0.1"]) expect(isLoopback(a)).toBe(true);
+    for (const a of ["192.168.0.228", "10.0.0.1", "::ffff:192.168.0.1", "fe80::1", "", undefined]) expect(isLoopback(a)).toBe(false);
   });
 });

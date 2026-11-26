@@ -148,4 +148,42 @@ describe("CLI end to end", () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain("[w] plan.md:");
   });
+
+  test("url prints the page link with the saved token, never the hash from the config", async () => {
+    const r = await planchat(["url", "plan.md"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(`local\thttp://127.0.0.1:${port}/?token=${encodeURIComponent(token)}#ws=w&file=plan.md`);
+    expect(r.out).not.toContain("lan\t"); // the daemon listens on loopback only
+
+    const bare = await planchat(["url", "plan.md", "--no-token", "--mode", "source"]);
+    expect(bare.out).toBe(`local\thttp://127.0.0.1:${port}/#ws=w&file=plan.md&mode=source`);
+
+    const missing = await planchat(["url", "nope.md"]);
+    expect(missing.code).not.toBe(0);
+    expect(missing.err).toContain("nope.md is not shown in workspace w");
+  });
+
+  test("url --session scopes the page and warns while the session hears nothing there", async () => {
+    const before = await planchat(["--session", "rev", "url", "plan.md", "--json"]);
+    expect(before.code).toBe(0);
+    expect(before.err).toContain("session rev is not subscribed to w");
+    const j = JSON.parse(before.out);
+    expect(j).toMatchObject({ ws: "w", file: "plan.md", session: "rev", lan: null });
+    expect(j.local).toEndWith("#ws=w&file=plan.md&session=rev");
+
+    expect((await planchat(["--session", "rev", "subscribe", "w", "plan.md"])).code).toBe(0);
+    const after = await planchat(["--session", "rev", "url", "plan.md"]);
+    expect(after.err).toBe("");
+  });
+
+  test("url without --session inside a connected agent shell scopes to that agent's session", async () => {
+    const agentEnv = { ...env, CLAUDE_CODE_SESSION_ID: "cc-scope" };
+    const ev = new Lines(Bun.spawn([process.execPath, CLI, "events", "--session", "scoped", "--cwd", root], { env: agentEnv, stdin: "ignore", stdout: "pipe", stderr: "pipe" }));
+    await ev.waitFor((l) => l.startsWith("[planchat] connected as scoped"));
+    const p = Bun.spawn([process.execPath, CLI, "url", "plan.md", "--json"], { env: agentEnv, cwd: root, stdout: "pipe", stderr: "pipe" });
+    const out = await new Response(p.stdout).text();
+    expect(await p.exited).toBe(0);
+    expect(JSON.parse(out).session).toBe("scoped");
+    ev.proc.kill();
+  });
 });

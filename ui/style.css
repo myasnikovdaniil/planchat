@@ -509,6 +509,50 @@ code {
   font-size: 11px;
   color: var(--fg-3);
 }
+button.session-row {
+  width: 100%;
+  text-align: left;
+}
+button.session-row:hover {
+  background: var(--card-2);
+}
+.session-row.scoped {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+/* file list narrowed to one session */
+.side-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.scope-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 2px 4px 2px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--fg);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.scope-clear {
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+.scope-clear:hover {
+  background: var(--card-hover);
+  color: var(--fg);
+}
+.scope-empty {
+  padding: 8px 16px;
+}
 
 /* canvas */
 .canvas {

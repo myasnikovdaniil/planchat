@@ -202,6 +202,38 @@ try {
   check("reaction on an agent comment stored", [...hub.ws("w").state.threads.values()].some((t) => t.comments.some((c) => c.author.kind === "session" && c.reactions.some((r) => r.kind === "ack"))));
   if (shots) await page.screenshot({ path: join(shots, "4-narrow.png") });
 
+  // --- session scope: the file list shows only what the session is subscribed to
+  hub.subscribe("rev", "w", ["docs/plan.md"]);
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto(`${url}/#ws=w&session=rev`);
+  await page.waitForSelector(".scope-chip");
+  await page.waitForFunction(() => location.hash.includes("file=docs%2Fplan.md"), null, { timeout: 3000 });
+  const scopedFiles = await page.$$eval(".sidebar .tree .row.file .name", (els) => els.map((e) => e.textContent));
+  const scopedDirs = await page.$$eval(".sidebar .tree .row.dir .name", (els) => els.map((e) => e.textContent));
+  check("a scoped link without a file opens the scope's first file", (await page.textContent(".crumbs .leaf")) === "plan.md");
+  check("the scoped tree lists only the session's files", JSON.stringify(scopedFiles) === '["plan.md"]' && JSON.stringify(scopedDirs) === '["docs"]', JSON.stringify({ scopedFiles, scopedDirs }));
+  if (shots) await page.screenshot({ path: join(shots, "6-scope.png") });
+
+  await page.click(".scope-clear");
+  await page.waitForSelector(".sidebar .tree .row.dir >> text=src");
+  check("“all files” drops the scope from the list and the URL", !(await page.$(".scope-chip")) && !(await page.evaluate(() => location.hash)).includes("session="));
+
+  await page.click(".session-row >> text=rev");
+  await page.waitForSelector(".scope-chip");
+  const rescoped = await page
+    .waitForFunction(
+      () => location.hash.includes("session=rev") && ![...document.querySelectorAll(".sidebar .tree .row.dir .name")].some((e) => e.textContent === "src"),
+      null,
+      { timeout: 3000 },
+    )
+    .then(() => true)
+    .catch(() => false);
+  check("clicking a session scopes the list and the URL to it", rescoped, await page.evaluate(() => location.hash));
+
+  hub.subscribe("rev", "w", ["docs/plan.md", "src/**"]);
+  await page.waitForSelector(".sidebar .tree .row.dir >> text=src", { timeout: 3000 });
+  check("a subscription change updates the scoped list live", true);
+
   check("no page errors", errors.length === 0, errors.join(" | "));
 } catch (e) {
   failures++;

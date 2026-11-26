@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import { configMtime, configPath, loadConfig, saveConfig, SESSION_NAME_RE, type Config } from "./config.ts";
 import { Hub, type Connection, type StreamMsg, type Transport } from "./hub.ts";
+import { matchesAny } from "./router.ts";
 import { AGENT_RE } from "./agent.ts";
 import { sha256, type Author } from "./store.ts";
 import { OpError, type AnchorInput, type Workspace } from "./workspace.ts";
@@ -54,6 +55,13 @@ function safeEqual(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
+/** The peer is this machine: 127.0.0.0/8 or ::1, also as an IPv4-mapped IPv6 address. */
+export function isLoopback(addr: string | undefined): boolean {
+  if (!addr) return false;
+  const a = addr.toLowerCase().replace(/^::ffff:/, "");
+  return a === "::1" || /^127\.\d+\.\d+\.\d+$/.test(a);
+}
+
 function cookie(req: Request, name: string): string | null {
   const raw = req.headers.get("cookie");
   if (!raw) return null;
@@ -86,7 +94,7 @@ export class PlanchatServer {
   async start(): Promise<void> {
     if (!this.opts.auth && this.opts.lan && !this.opts.quiet) {
       console.error(
-        `[planchat] WARNING: listening on ${this.opts.lan} without auth. Anyone on that network can post comments, and comments reach Claude sessions that have shell access.`,
+        `[planchat] WARNING: listening on ${this.opts.lan} without auth. Anyone on that network reads every workspace and posts comments, and comments reach agent sessions that have shell access.`,
       );
     }
     if (this.opts.auth && Object.keys(this.cfg.tokens).length === 0) {
@@ -234,7 +242,7 @@ export class PlanchatServer {
     try {
       if (upgrade && url.pathname === "/api/events") return this.upgrade(req, url, server);
       if (!url.pathname.startsWith("/api/")) return this.static(url.pathname);
-      return await this.api(req, url, who, mutating);
+      return await this.api(req, url, who, mutating, isLoopback(server.requestIP(req)?.address));
     } catch (e) {
       if (e instanceof OpError) return err(e.status, e.code, e.message, e.extra);
       if (e instanceof SyntaxError) return err(400, "bad_json", e.message);
@@ -289,7 +297,7 @@ export class PlanchatServer {
     return v;
   }
 
-  private async api(req: Request, url: URL, human: string, mutating: boolean): Promise<Response> {
+  private async api(req: Request, url: URL, human: string, mutating: boolean, local: boolean): Promise<Response> {
     const p = url.pathname;
     const q = url.searchParams;
     const m = req.method;
@@ -303,12 +311,15 @@ export class PlanchatServer {
         reactions: this.cfg.reactions,
         workspaces: [...hub.workspaces.values()].map((w) => ({ name: w.name, root: w.root })),
         graceSeconds: this.cfg.graceSeconds,
+        listen: { port: this.port, lan: this.opts.lan, auth: this.opts.auth },
       });
     }
     if (p === "/api/workspaces") {
       if (m === "GET") return json([...hub.workspaces.values()].map((w) => ({ name: w.name, root: w.root, include: w.cfg.include, exclude: w.cfg.exclude })));
       if (m === "POST") {
         if (actor().kind !== "human") throw new OpError(403, "forbidden", "only a human adds workspaces");
+        // A workspace exposes a directory: whoever reaches the LAN address must not pick which one.
+        if (!local) throw new OpError(403, "forbidden", "workspaces are added from this machine only (127.0.0.1)");
         const b = await this.body(req);
         if (typeof b.name !== "string" || typeof b.root !== "string") throw new OpError(400, "bad_request", "name and root are required");
         const w = hub.addWorkspace({ name: b.name, root: b.root, include: b.include ?? [], exclude: b.exclude ?? [] });
@@ -324,13 +335,23 @@ export class PlanchatServer {
     if (m === "GET" && p === "/api/sessions") return json(hub.sessions());
     if (m === "GET" && p === "/api/files") {
       const w = hub.ws(q.get("ws"));
+      // ?session=NAME: only the files that session is subscribed to here (none if it is not)
+      const session = q.get("session");
+      const globs = session === null ? null : (w.delivery.subs.get(session)?.globs ?? []);
+      const inScope = (f: string) => globs === null || matchesAny(globs, f);
       const counts: Record<string, { open: number; total: number }> = {};
       for (const t of w.state.threads.values()) {
+        if (!inScope(t.file)) continue;
         const c = (counts[t.file] ??= { open: 0, total: 0 });
         c.total++;
         if (t.status === "open") c.open++;
       }
-      return json({ ws: w.name, files: w.index.list(), threads: counts });
+      return json({
+        ws: w.name,
+        files: w.index.list().filter(inScope),
+        threads: counts,
+        ...(session === null ? {} : { scope: { session, globs } }),
+      });
     }
     if (m === "GET" && p === "/api/file") {
       const w = hub.ws(q.get("ws"));

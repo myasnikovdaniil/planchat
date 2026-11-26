@@ -3,9 +3,9 @@
 
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
-import { planchatHome, configPath, loadConfig, saveConfig, SESSION_NAME_RE, tokenPath, normalizeWorkspace } from "./config.ts";
+import { planchatHome, configPath, loadConfig, saveConfig, SESSION_NAME_RE, tokenPath, normalizeWorkspace, readToken } from "./config.ts";
 import { PlanchatClient, ClientError, streamEvents, type AnchorArg } from "./client.ts";
 import { fmtThread, fmtThreadFull } from "./format.ts";
 import { sha256 } from "./store.ts";
@@ -13,7 +13,7 @@ import { agentFromEnv, defaultSessionName } from "./agent.ts";
 
 const VERSION = "0.1.0";
 
-const HELP = `planchat ${VERSION} — comments on character ranges of files, delivered to Claude sessions
+const HELP = `planchat ${VERSION} — comments on character ranges of files, delivered to running coding agents (Claude Code, Codex, any shell or MCP client)
 
 daemon
   planchat serve [--port N] [--lan ADDR] [--no-auth [--no-auth-lan]]
@@ -29,6 +29,9 @@ session side
   planchat subscribe [WS] [GLOB]...              change what the session hears (default: workspace of cwd, **)
   planchat unsubscribe [WS]
   planchat sessions
+  planchat url [FILE] [--ws W] [--mode source|rendered] [--no-token]
+                                                 links to the UI: local, plus lan when the daemon listens on one;
+                                                 with --session the page lists only that session's files
 
 threads (sessions pass --session NAME)
   planchat list [--ws W] [--file F] [--status open|resolved|all] [--since SEQ|ISO]
@@ -97,6 +100,9 @@ async function main(argv: string[]) {
       "base-hash": { type: "string" },
       // react
       off: { type: "boolean" },
+      // url
+      mode: { type: "string" },
+      "no-token": { type: "boolean" },
     },
   });
   if (v.version) return console.log(VERSION);
@@ -198,7 +204,7 @@ async function main(argv: string[]) {
         const d = defaultSessionName();
         name = d.name;
         console.error(
-          `[planchat] no --session/PLANCHAT_SESSION: using ${name}. ${d.stable ? "It is stable for this Claude session only;" : "It is random;"} claims will not survive a session restart.`,
+          `[planchat] no --session/PLANCHAT_SESSION: using ${name}. ${d.stable ? "It is stable for this agent session only;" : "It is random;"} claims will not survive a session restart.`,
         );
       }
       const cwd = resolve(v.cwd ?? process.cwd());
@@ -264,6 +270,53 @@ async function main(argv: string[]) {
       const c = client();
       const r = cmd === "subscribe" ? await c.subscribe({ ws, cwd: process.cwd(), globs }) : await c.unsubscribe({ ws, cwd: process.cwd() });
       return print(r, () => `${(r as any).name}: ${((r as any).subscriptions ?? []).map((x: any) => `${x.ws}:${x.globs.join(",")}`).join(" ") || "no subscriptions"}`);
+    }
+
+    case "url": {
+      const c = client();
+      const me = await c.me();
+      // address, port and auth as the running daemon sees them, not as the config file says
+      const listen: { port: number; lan: string | null; auth: boolean } = me.listen ?? { port: Number(new URL(c.url).port || 7717), lan: null, auth: true };
+      const spaces: { name: string; root: string }[] = me.workspaces;
+      const fileArg = pos[1];
+      const abs = resolve(fileArg ?? process.cwd());
+      const inside = (root: string, p: string) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
+      const w = v.ws ? spaces.find((x) => x.name === v.ws) : spaces.filter((x) => inside(x.root, abs)).sort((a, b) => b.root.length - a.root.length)[0];
+      if (v.ws && !w) die(`no workspace ${v.ws}; see planchat ws list`);
+      if (!w) die(fileArg ? `${abs} is in no workspace; see planchat ws list` : "the current directory is in no workspace: pass --ws W or a FILE");
+      let rel: string | undefined;
+      if (fileArg) {
+        if (abs === w.root || !inside(w.root, abs)) die(`${abs} is not a file inside workspace ${w.name} (${w.root})`);
+        rel = relative(w.root, abs).split(sep).join("/");
+        const listed = await c.request<{ files: string[] }>("GET", `/api/files?${new URLSearchParams({ ws: w.name })}`);
+        if (!listed.files.includes(rel)) die(`${rel} is not shown in workspace ${w.name}: it is missing, gitignored, excluded or binary`);
+      }
+      if (v.mode !== undefined && v.mode !== "source" && v.mode !== "rendered") die("--mode is source or rendered");
+      // --session, or the session this agent shell is connected as (planchat events / attach codex)
+      const scoped: string | undefined = session ?? (me.author?.kind === "session" ? me.author.name : undefined);
+      if (scoped) {
+        const sub = (await c.sessions()).find((s) => s.name === scoped)?.subscriptions?.find((x: any) => x.ws === w.name);
+        if (!sub) process.stderr.write(`planchat: session ${scoped} is not subscribed to ${w.name}, so the page lists no files; run planchat --session ${scoped} subscribe ${w.name} ${rel ?? "GLOB"}\n`);
+      }
+      let token = "";
+      if (listen.auth && !v["no-token"]) {
+        const t = readToken();
+        if (!t) die("the daemon wants a token and none is saved here: run planchat token add <name> --save");
+        token = t;
+      }
+      const hash = new URLSearchParams({ ws: w.name });
+      if (rel) hash.set("file", rel);
+      if (v.mode) hash.set("mode", v.mode);
+      if (scoped) hash.set("session", scoped);
+      const page = (host: string) => `http://${host.includes(":") ? `[${host}]` : host}:${listen.port}/${token ? `?token=${encodeURIComponent(token)}` : ""}#${hash}`;
+      const out = {
+        local: page("127.0.0.1"),
+        lan: listen.lan && listen.lan !== "127.0.0.1" ? page(listen.lan) : null,
+        ws: w.name,
+        file: rel ?? null,
+        session: scoped ?? null,
+      };
+      return print(out, () => [`local\t${out.local}`, ...(out.lan ? [`lan\t${out.lan}`] : [])].join("\n"));
     }
 
     case "list": {

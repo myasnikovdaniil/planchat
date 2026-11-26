@@ -1,6 +1,7 @@
 // All workspaces of the daemon, session presence, live connections of
 // `planchat events` / `planchat mcp`, and the fan-out to UI streams.
 
+import { realpathSync } from "node:fs";
 import { sep } from "node:path";
 import { CODEX_THREAD_RE, CodexConnection, spawnCodexQueue, type CodexQueue } from "./codex.ts";
 import { readJson, writeFileAtomic } from "./store.ts";
@@ -78,7 +79,14 @@ export class Hub implements WorkspaceHooks {
   }
 
   start(): void {
-    for (const w of this.cfg.workspaces) this.addWorkspace(w);
+    for (const w of this.cfg.workspaces) {
+      try {
+        this.addWorkspace(w);
+      } catch (e) {
+        if (!(e instanceof OpError) || e.code !== "root_taken") throw e;
+        console.error(`[planchat] skipping workspace ${w.name}: ${e.message}`);
+      }
+    }
     for (const [session, a] of Object.entries(this.loadAttachments())) {
       try {
         this.attachCodex(session, a.thread, a.cwd, false);
@@ -148,6 +156,18 @@ export class Hub implements WorkspaceHooks {
     const wc = normalizeWorkspace(input);
     if (!WORKSPACE_NAME_RE.test(wc.name)) throw new OpError(400, "bad_request", `bad workspace name ${wc.name}`);
     if (this.workspaces.has(wc.name)) throw new OpError(409, "exists", `workspace ${wc.name} already exists`);
+    // Each workspace keeps its log in <root>/.planchat; two on one directory would write the same events.jsonl.
+    const real = (p: string) => {
+      try {
+        return realpathSync(p);
+      } catch {
+        return p;
+      }
+    };
+    const taken = [...this.workspaces.values()].find((w) => real(w.root) === real(wc.root));
+    if (taken) {
+      throw new OpError(409, "root_taken", `${wc.root} is already the root of workspace ${taken.name}; two workspaces on one directory would share ${wc.root}/.planchat`);
+    }
     const ws = new Workspace(
       wc,
       {

@@ -25,17 +25,25 @@ import {
 type Mode = "source" | "rendered";
 type Filter = "open" | "resolved" | "all";
 
-function readHash(): { ws?: string; file?: string; mode?: Mode; t?: string } {
+// session: list only the files that session is subscribed to
+function readHash(): { ws?: string; file?: string; mode?: Mode; t?: string; session?: string } {
   const p = new URLSearchParams(location.hash.slice(1));
-  return { ws: p.get("ws") ?? undefined, file: p.get("file") ?? undefined, mode: (p.get("mode") as Mode) ?? undefined, t: p.get("t") ?? undefined };
+  return {
+    ws: p.get("ws") ?? undefined,
+    file: p.get("file") ?? undefined,
+    mode: (p.get("mode") as Mode) ?? undefined,
+    t: p.get("t") ?? undefined,
+    session: p.get("session") || undefined,
+  };
 }
 
-function writeHash(s: { ws?: string; file?: string; mode?: Mode; t?: string | null }) {
+function writeHash(s: { ws?: string; file?: string; mode?: Mode; t?: string | null; session?: string }) {
   const p = new URLSearchParams();
   if (s.ws) p.set("ws", s.ws);
   if (s.file) p.set("file", s.file);
   if (s.mode) p.set("mode", s.mode);
   if (s.t) p.set("t", s.t);
+  if (s.session) p.set("session", s.session);
   const next = "#" + p.toString();
   if (location.hash !== next) history.replaceState(null, "", next);
 }
@@ -443,6 +451,9 @@ function App() {
   const [threads, setThreads] = useState<ThreadView[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [active, setActive] = useState<string | null>(initial.t ?? null);
+  const [scope, setScope] = useState<string | undefined>(initial.session);
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const [reanchor, setReanchor] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("open");
   const [openDirs, setOpenDirs] = useState<Set<string>>(new Set());
@@ -476,7 +487,16 @@ function App() {
       .catch((e) => toast(errorText(e)));
   }, []);
 
-  const loadFiles = useCallback(() => ws && api.files(ws).then(setFiles).catch((e) => toast(errorText(e))), [ws]);
+  const loadFiles = useCallback(
+    () =>
+      ws &&
+      api
+        .files(ws, scopeRef.current)
+        // a slow answer for a scope the user already left must not overwrite the current list
+        .then((f) => f.scope?.session === scopeRef.current && setFiles(f))
+        .catch((e) => toast(errorText(e))),
+    [ws],
+  );
   const loadThreads = useCallback(() => ws && api.threads(ws).then(setThreads).catch((e) => toast(errorText(e))), [ws]);
   const loadSessions = useCallback(() => api.sessions().then(setSessions).catch(() => {}), []);
   const pathRef = useRef(path);
@@ -511,7 +531,11 @@ function App() {
         if (m.type === "event") soon(() => (loadThreads(), loadFiles()));
         else if (m.type === "file" && m.path === pathRef.current) loadFile();
         else if (m.type === "tree") loadFiles();
-        else if (m.type === "sessions") loadSessions();
+        else if (m.type === "sessions") {
+          loadSessions();
+          // a subscription change moves files in or out of the scoped list
+          if (scopeRef.current) loadFiles();
+        }
       },
       () => {
         loadThreads();
@@ -540,7 +564,18 @@ function App() {
     }
   }, [path, ws]);
 
-  useEffect(() => writeHash({ ws, file: path, mode, t: active }), [ws, path, mode, active]);
+  useEffect(() => writeHash({ ws, file: path, mode, t: active, session: scope }), [ws, path, mode, active, scope]);
+
+  useEffect(() => {
+    if (!ws) return;
+    setFiles(null);
+    loadFiles();
+  }, [scope]);
+
+  // a scoped link without a file opens the first file of the scope
+  useEffect(() => {
+    if (scope && !path && files?.scope?.session === scope && files.files.length > 0) setPath(files.files[0]);
+  }, [files, scope]);
 
   useEffect(() => {
     const onHash = () => {
@@ -549,6 +584,7 @@ function App() {
       setPath(h.file);
       if (h.mode) setMode(h.mode);
       setActive(h.t ?? null);
+      setScope(h.session);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -612,8 +648,27 @@ function App() {
       </header>
 
       <aside class="sidebar">
-        <div class="side-title">Files</div>
+        <div class="side-title">
+          Files
+          {scope && (
+            <span class="scope-chip" title={`only the files ${scope} is subscribed to: ${files?.scope?.globs.join(", ") ?? ""}`}>
+              <IconBot size={12} />
+              {scope}
+              <button class="scope-clear" onClick={() => setScope(undefined)} title="show all files">
+                all files
+              </button>
+            </span>
+          )}
+        </div>
         <div class="side-scroll">
+          {scope && files?.scope?.session === scope && files.files.length === 0 && (
+            <div class="muted small scope-empty">
+              {scope} is subscribed to no file in {ws}.{" "}
+              <button class="btn ghost small" onClick={() => setScope(undefined)}>
+                Show all files
+              </button>
+            </div>
+          )}
           <Tree
             node={tree}
             current={path}
@@ -631,14 +686,20 @@ function App() {
         </div>
         <div class="side-title">Sessions</div>
         <div class="sessions">
-          {wsSessions.length === 0 && <div class="muted small">No session subscribed. Run the planchat-watch skill in a Claude session.</div>}
+          {wsSessions.length === 0 && (
+            <div class="muted small">No session subscribed. Connect an agent: the planchat-watch skill in Claude Code, planchat attach codex in Codex.</div>
+          )}
           {wsSessions.map((s) => (
-            <div class={`session-row ${s.online ? "online" : ""}`} title={s.subscriptions.map((x) => `${x.ws}: ${x.globs.join(", ")}`).join("\n")}>
+            <button
+              class={`session-row ${s.online ? "online" : ""} ${s.name === scope ? "scoped" : ""}`}
+              onClick={() => setScope(s.name === scope ? undefined : s.name)}
+              title={`${s.subscriptions.map((x) => `${x.ws}: ${x.globs.join(", ")}`).join("\n")}\n\n${s.name === scope ? "click: show all files" : "click: show only this session's files"}`}
+            >
               <span class="status" />
               <IconBot size={14} />
               <span class="name">{s.name}</span>
               <span class="via">{s.online ? s.transport ?? "" : "offline"}</span>
-            </div>
+            </button>
           ))}
         </div>
       </aside>
